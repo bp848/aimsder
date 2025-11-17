@@ -1,5 +1,6 @@
 const path = require('path');
 const webpack = require('webpack');
+const HtmlWebpackPlugin = require('html-webpack-plugin');
 
 module.exports = {
   entry: './index.tsx',
@@ -7,6 +8,7 @@ module.exports = {
     filename: 'bundle.js',
     path: path.resolve(__dirname, 'dist'),
     publicPath: '/',
+    clean: true,
   },
   resolve: {
     extensions: ['.ts', '.tsx', '.js', '.jsx'],
@@ -23,6 +25,10 @@ module.exports = {
   plugins: [
     new webpack.DefinePlugin({
       'process.env.API_KEY': JSON.stringify(process.env.API_KEY || ''),
+    }),
+    new HtmlWebpackPlugin({
+      template: path.resolve(__dirname, 'index.html'),
+      filename: 'index.html',
     }),
   ],
   devServer: {
