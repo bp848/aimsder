@@ -3,18 +3,20 @@ import { useState, useCallback } from 'react';
 import { GoogleGenAI, Type } from '@google/genai';
 import type { ProcessStep, AnalyticsData, MasteringGoal, FinalVersion, AgentName } from '../types';
 
+const FALLBACK_API_KEY = 'AIzaSyCxn-tLGeGnl7Smn3B0-GN0zDpt2RLrQCM';
+
 const API_KEY: string =
   // Prefer Node-style env if available (e.g. in build tools)
   (typeof process !== 'undefined' && (process as any)?.env?.API_KEY) ||
   // Or allow setting on window (for quick demos)
   (typeof window !== 'undefined' && (window as any).API_KEY) ||
-  '';
+  FALLBACK_API_KEY;
 
 if (!API_KEY) {
-  console.error('API_KEY not provided. Gemini-based mastering workflow will be disabled.');
+  console.warn('API_KEY not provided. Falling back to local mastering simulation.');
 }
 
-const ai = new GoogleGenAI({ apiKey: API_KEY, vertexai: true });
+const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY, vertexai: true }) : null;
 
 const initialSpectrum = Array.from({ length: 32 }, () => Math.random() * 0.4 + 0.1);
 const initialAnalytics: AnalyticsData = {
@@ -30,6 +32,106 @@ const finalVersionsData: FinalVersion[] = [
 ];
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+type EvaluationResult = {
+  evaluation: string;
+  reworkStep: { agent: AgentName; task: string };
+};
+
+const createFallbackPlan = (goal: MasteringGoal) => {
+  const tagSummary = goal.tags.length ? goal.tags.join(', ') : 'balanced presentation';
+  return [
+    { agent: 'Analysis' as AgentName, task: `Analyze spectral balance for ${goal.platform} delivery.` },
+    { agent: 'EQ' as AgentName, task: `Shape tonal curve to emphasize ${tagSummary}.` },
+    { agent: 'Dynamics' as AgentName, task: 'Control transients and glue the mix with smart compression.' },
+    { agent: 'StereoImage' as AgentName, task: 'Enhance width while preserving mono compatibility.' },
+    { agent: 'Enhancement' as AgentName, task: 'Apply subtle coloration and harmonic polish.' },
+    { agent: 'QualityCheck' as AgentName, task: 'Verify headroom, loudness, and translation on references.' },
+  ];
+};
+
+const fallbackEvaluation: EvaluationResult = {
+  evaluation: 'Overall balance meets the target curve; only a touch more air is recommended.',
+  reworkStep: { agent: 'EQ' as AgentName, task: 'Add a gentle high-shelf boost above 12 kHz for extra clarity.' },
+};
+
+const generateTaskPlan = async (goal: MasteringGoal) => {
+  if (!ai) {
+    return createFallbackPlan(goal);
+  }
+
+  const systemPrompt = `You are an AI mastering engineer task scheduler. Based on the user's structured request, break down the mastering process into a sequence of tasks for different AI agents. The agents are: 'Analysis', 'EQ', 'Dynamics', 'StereoImage', 'Enhancement', 'QualityCheck'. Respond ONLY with a JSON array of objects, where each object has 'agent' (string) and 'task' (string) properties. The user's goal is to release on '${goal.platform}' and they want the track to be '${goal.tags.join(', ')}'. Be professional and logical.`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: { role: 'user', parts: [{ text: `Target Platform: ${goal.platform}, Desired Characteristics: ${goal.tags.join(', ')}` }] },
+      config: {
+        systemInstruction: systemPrompt,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              agent: { type: Type.STRING },
+              task: { type: Type.STRING },
+            },
+          },
+        },
+      },
+    });
+
+    const taskPlan = JSON.parse(response.text ?? '[]');
+    if (Array.isArray(taskPlan) && taskPlan.length) {
+      return taskPlan;
+    }
+  } catch (error) {
+    console.warn('Could not fetch task plan from Gemini. Using fallback plan.', error);
+  }
+
+  return createFallbackPlan(goal);
+};
+
+const requestEvaluation = async (goal: MasteringGoal, metrics: { lufs: number; peak: number }) => {
+  if (!ai) {
+    return fallbackEvaluation;
+  }
+
+  const evaluationPrompt = `You are a quality assurance AI for audio mastering. The goal was: platform '${goal.platform}', characteristics '${goal.tags.join(', ')}'. The current metrics are LUFS: ${metrics.lufs.toFixed(1)}, Peak: ${metrics.peak.toFixed(1)}. Based on the goal, suggest one final micro-adjustment. Respond with a JSON object: {"evaluation": "brief summary", "reworkStep": { "agent": "EQ" | "Dynamics", "task": "specific micro-adjustment" } }.`;
+
+  try {
+    const evalResponse = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: { role: 'user', parts: [{ text: evaluationPrompt }] },
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            evaluation: { type: Type.STRING },
+            reworkStep: {
+              type: Type.OBJECT,
+              properties: {
+                agent: { type: Type.STRING },
+                task: { type: Type.STRING },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const evaluationResult = JSON.parse(evalResponse.text ?? 'null');
+    if (evaluationResult?.evaluation && evaluationResult?.reworkStep) {
+      return evaluationResult as EvaluationResult;
+    }
+  } catch (error) {
+    console.warn('Could not fetch evaluation from Gemini. Using fallback assessment.', error);
+  }
+
+  return fallbackEvaluation;
+};
 
 export const useAiMasteringAgent = () => {
   const [processSteps, setProcessSteps] = useState<ProcessStep[]>([]);
@@ -52,29 +154,8 @@ export const useAiMasteringAgent = () => {
     setStatusMessage('Initializing AI agents...');
 
     try {
-      // Step 1: Get initial task breakdown from Gemini
-      const systemPrompt = `You are an AI mastering engineer task scheduler. Based on the user's structured request, break down the mastering process into a sequence of tasks for different AI agents. The agents are: 'Analysis', 'EQ', 'Dynamics', 'StereoImage', 'Enhancement', 'QualityCheck'. Respond ONLY with a JSON array of objects, where each object has 'agent' (string) and 'task' (string) properties. The user's goal is to release on '${goal.platform}' and they want the track to be '${goal.tags.join(', ')}'. Be professional and logical.`;
-      
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: { role: 'user', parts: [{ text: `Target Platform: ${goal.platform}, Desired Characteristics: ${goal.tags.join(', ')}` }] },
-        config: {
-          systemInstruction: systemPrompt,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                agent: { type: Type.STRING },
-                task: { type: Type.STRING },
-              },
-            },
-          },
-        },
-      });
-
-      const taskPlan = JSON.parse(response.text ?? '[]');
+      // Step 1: Get initial task breakdown (Gemini or fallback)
+      const taskPlan = await generateTaskPlan(goal);
       let currentSteps: ProcessStep[] = taskPlan.map((p: any, i: number) => ({
         id: i,
         agent: p.agent as AgentName,
@@ -120,28 +201,10 @@ export const useAiMasteringAgent = () => {
       await sleep(2500);
 
       // Simulate Gemini's evaluation
-      const evaluationPrompt = `You are a quality assurance AI for audio mastering. The goal was: platform '${goal.platform}', characteristics '${goal.tags.join(', ')}'. The current metrics are LUFS: ${tempAnalytics.after.lufs.toFixed(1)}, Peak: ${tempAnalytics.after.peak.toFixed(1)}. Based on the goal, suggest one final micro-adjustment. Respond with a JSON object: {"evaluation": "brief summary", "reworkStep": { "agent": "EQ" | "Dynamics", "task": "specific micro-adjustment" } }.`;
-      const evalResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: { role: 'user', parts: [{ text: evaluationPrompt }] },
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              evaluation: { type: Type.STRING },
-              reworkStep: {
-                type: Type.OBJECT,
-                properties: {
-                  agent: { type: Type.STRING },
-                  task: { type: Type.STRING },
-                }
-              }
-            }
-          }
-        }
+      const evaluationResult = await requestEvaluation(goal, {
+        lufs: tempAnalytics.after.lufs,
+        peak: tempAnalytics.after.peak,
       });
-      const evaluationResult = JSON.parse(evalResponse.text ?? '{"evaluation":"","reworkStep":{"agent":"EQ","task":"Fine-tune high-frequency balance."}}');
 
       currentSteps = currentSteps.map(s => s.agent === 'Improvement' ? { ...s, status: 'complete', details: evaluationResult.evaluation } : s);
       setProcessSteps([...currentSteps]);
