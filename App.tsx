@@ -1,14 +1,15 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { Layout } from './components/Layout';
-import LandingPage from './pages/LandingPage';
-import AuthPage from './pages/AuthPage';
-import DashboardPage from './pages/DashboardPage';
-import MasteringPage from './pages/MasteringPage';
-import AdminPage from './pages/AdminPage';
-import SettingsPage from './pages/SettingsPage';
 import type { User } from './types';
 import { appApi } from './services/appApi';
+
+const LandingPage = lazy(() => import('./pages/LandingPage'));
+const AuthPage = lazy(() => import('./pages/AuthPage'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const MasteringPage = lazy(() => import('./pages/MasteringPage'));
+const AdminPage = lazy(() => import('./pages/AdminPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 
 const App: React.FC = () => {
   const [route, setRoute] = useState(window.location.hash || '#/');
@@ -109,7 +110,9 @@ const App: React.FC = () => {
   const content = isBootstrapping ? (
     <div className="text-center text-gray-400 py-16">Restoring your workspace...</div>
   ) : (
-    renderPage()
+    <Suspense fallback={<div className="text-center text-gray-400 py-16">Preparing interface...</div>}>
+      {renderPage()}
+    </Suspense>
   );
 
   return (
