@@ -22,22 +22,16 @@ RUN npm install
 # 残りのソースコードをコピー
 COPY . .
 
-# TypeScript のサーバー部分をビルド
-# → dist-server/server/masteringServer.js が生成される
+# フロントエンドの本番ビルドを作成
+# （server:build は内部で npm run build を呼び出す）
 RUN npm run server:build
 
 # 環境変数（Cloud Run で上書きも可能）
 ENV NODE_ENV=production
-# Cloud Run からのリクエストを受けるポート
-ENV MASTERING_SERVER_PORT=8080
-# Python / ffmpeg バイナリ（デフォルトでもこの名前なので明示）
-ENV PYTHON_BIN=python3
-ENV FFMPEG_BIN=ffmpeg
-ENV FFPROBE_BIN=ffprobe
+ENV PORT=8080
 
 # Cloud Run に公開するコンテナポート
 EXPOSE 8080
 
 # サーバー起動コマンド
-# server/masteringServer.ts → dist-server/server/masteringServer.js を実行
-CMD ["node", "dist-server/server/masteringServer.js"]
+CMD ["npm", "run", "server:start"]
